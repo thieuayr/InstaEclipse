@@ -23,4 +23,10 @@ public class VersionCheckUtilityValidationTest {
         assertFalse(VersionCheckUtility.isValidUpdateTarget("0.4.6", ""));
         assertFalse(VersionCheckUtility.isValidUpdateTarget("0.4.6", "not a url"));
     }
+
+    @Test
+    public void updateTarget_nullInputIsRejected() {
+        assertFalse(VersionCheckUtility.isValidUpdateTarget(null, "https://example.com/update"));
+        assertFalse(VersionCheckUtility.isValidUpdateTarget("0.4.6", null));
+    }
 }

@@ -77,7 +77,7 @@ public class VersionCheckUtility {
 
         try {
             String scheme = URI.create(updateUrl).getScheme();
-            return "https".equalsIgnoreCase(scheme);
+            return scheme != null && "https".equalsIgnoreCase(scheme);
         } catch (IllegalArgumentException ignored) {
             return false;
         }
