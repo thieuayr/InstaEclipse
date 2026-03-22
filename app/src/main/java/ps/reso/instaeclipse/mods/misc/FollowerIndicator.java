@@ -194,7 +194,7 @@ public class FollowerIndicator {
                     Boolean followsMe = (Boolean) param.getResult();
                     String targetId = ps.reso.instaeclipse.utils.tracker.FollowIndicatorTracker.currentlyViewedUserId;
                     try {
-                        if (userId[0].equals(targetId)) {
+                        if (userId[0] != null && userId[0].equals(targetId)) {
                             Context context = AndroidAppHelper.currentApplication().getApplicationContext();
                             String message;
                             if (username != null && !username.isEmpty()) {

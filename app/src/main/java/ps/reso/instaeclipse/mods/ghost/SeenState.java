@@ -38,6 +38,9 @@ public class SeenState {
                 } catch (Throwable e) {
                     continue; // Skip methods that can't be resolved
                 }
+                if (reflectMethod == null) {
+                    continue;
+                }
 
                 int modifiers = reflectMethod.getModifiers();
                 String returnType = String.valueOf(method.getReturnType());

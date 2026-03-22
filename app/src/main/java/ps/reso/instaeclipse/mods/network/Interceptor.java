@@ -55,114 +55,119 @@ public class Interceptor {
                         random_param_1, random_param_2, random_param_3, new XC_MethodHook() {
                             @Override
                             protected void beforeHookedMethod(MethodHookParam param) {
-                                Object requestObj = param.args[0]; // Dynamic object
-                                URI uri = (URI) XposedHelpers.getObjectField(requestObj, finalUriFieldName);
+                                try {
+                                    Object requestObj = param.args[0]; // Dynamic object
+                                    URI uri = (URI) XposedHelpers.getObjectField(requestObj, finalUriFieldName);
 
-                                if (uri != null && uri.getPath() != null) {
-                                    // Check all conditions passed in as predicates
-                                    boolean shouldDrop = false;
+                                    if (uri != null && uri.getPath() != null) {
+                                        String path = uri.getPath();
+                                        String host = uri.getHost();
+                                        String query = uri.getQuery();
+                                        // Check all conditions passed in as predicates
+                                        boolean shouldDrop = false;
 
-                                    // Ghost Mode URIs
-                                    if (FeatureFlags.isGhostScreenshot) {
-                                        shouldDrop |= uri.getPath().endsWith("/screenshot/") || uri.getPath().endsWith("/ephemeral_screenshot/");
-                                    }
-                                    if (FeatureFlags.isGhostViewOnce) {
-                                        shouldDrop |= uri.getPath().endsWith("/item_replayed/");
-                                        shouldDrop |= (uri.getPath().contains("/direct") && uri.getPath().endsWith("/item_seen/"));
-                                    }
-                                    if (FeatureFlags.isGhostStory) {
-                                        shouldDrop |= uri.getPath().contains("/api/v2/media/seen/");
-                                    }
-                                    if (FeatureFlags.isGhostLive) {
-                                        shouldDrop |= uri.getPath().contains("/heartbeat_and_get_viewer_count/");
-                                        FeatureStatusTracker.setHooked("GhostLive");
-                                    }
-
-                                    // Distraction Free
-                                    if (FeatureFlags.disableStories) {
-                                        shouldDrop |= uri.getPath().contains("/feed/reels_tray/")
-                                                || uri.getPath().contains("feed/get_latest_reel_media/")
-                                                || uri.getPath().contains("direct_v2/pending_inbox/?visual_message")
-                                                || uri.getPath().contains("stories/hallpass/")
-                                                || uri.getPath().contains("/api/v1/feed/reels_media_stream/");
-                                    }
-                                    if (FeatureFlags.disableFeed) {
-                                        shouldDrop |= uri.getPath().endsWith("/feed/timeline/");
-                                    }
-                                    if (FeatureFlags.disableReels && !FeatureFlags.disableReelsExceptDM) {
-                                        shouldDrop |= uri.getPath().endsWith("/qp/batch_fetch/")
-                                                || uri.getPath().contains("api/v1/clips")
-                                                || uri.getPath().contains("clips")
-                                                || uri.getPath().contains("mixed_media")
-                                                || uri.getPath().contains("mixed_media/discover/stream/");
-                                    }
-                                    if (FeatureFlags.disableReelsExceptDM) {
-                                        if (uri.getPath().startsWith("/api/v1/direct_v2/")) {
-                                            return;
+                                        // Ghost Mode URIs
+                                        if (FeatureFlags.isGhostScreenshot) {
+                                            shouldDrop |= path.endsWith("/screenshot/") || path.endsWith("/ephemeral_screenshot/");
                                         }
-                                        shouldDrop |= (uri.getPath().startsWith("/api/v1/clips/") && uri.getQuery() != null
-                                                && (uri.getQuery().contains("next_media_ids=")
-                                                || uri.getQuery().contains("max_id=")))
-                                                || uri.getPath().contains("/clips/discover/")
-                                                || uri.getPath().contains("/mixed_media/discover/stream/");
-                                    }
-                                    if (FeatureFlags.disableExplore) {
-                                        shouldDrop |= uri.getPath().contains("/discover/topical_explore")
-                                                || uri.getPath().contains("/discover/topical_explore_stream")
-                                                || (uri.getHost().contains("i.instagram.com") && uri.getPath().contains("/api/v1/fbsearch/top_serp/"));
-                                    }
-                                    if (FeatureFlags.disableComments) {
-                                        shouldDrop |= uri.getPath().contains("/api/v1/media/") && uri.getPath().contains("comments/");
-                                    }
-
-                                    // Ads
-                                    if (FeatureFlags.isAdBlockEnabled) {
-                                        shouldDrop |= uri.getPath().contains("profile_ads/get_profile_ads/")
-                                                || uri.getPath().contains("/async_ads/")
-                                                || uri.getPath().contains("/feed/injected_reels_media/")
-                                                || uri.getPath().equals("/api/v1/ads/graphql/");
-                                    }
-
-                                    // Analytics
-                                    if (FeatureFlags.isAnalyticsBlocked) {
-                                        shouldDrop |= uri.getHost().contains("graph.instagram.com")
-                                                || uri.getHost().contains("graph.facebook.com")
-                                                || uri.getPath().contains("/logging_client_events");
-                                    }
-
-                                    // Misc
-                                    if (FeatureFlags.disableRepost) {
-                                        shouldDrop |= uri.getPath().contains("/media/create_note/");
-                                    }
-
-                                    if (shouldDrop) {
-                                        // XposedBridge.log("the URI was blocked: " + uri.getPath());
-                                        // Modify the URI to divert the request to a harmless endpoint
-                                        try {
-                                            URI fakeUri = new URI("https", "127.0.0.1", "/404", null);
-                                            XposedHelpers.setObjectField(requestObj, finalUriFieldName, fakeUri);
-                                            // XposedBridge.log("🚫 [InstaEclipse] Changed URI to: " + fakeUri);
-                                        } catch (Exception e) {
-                                            // XposedBridge.log("❌ [InstaEclipse] Failed to modify URI: " + e.getMessage());
+                                        if (FeatureFlags.isGhostViewOnce) {
+                                            shouldDrop |= path.endsWith("/item_replayed/");
+                                            shouldDrop |= (path.contains("/direct") && path.endsWith("/item_seen/"));
                                         }
-                                    }
-                                    /*
-                                     DEV Purposes
-                                    else {
-                                        XposedBridge.log("Logging: " + uri.getHost() + uri.getPath());
-                                    }
-                                     */
+                                        if (FeatureFlags.isGhostStory) {
+                                            shouldDrop |= path.contains("/api/v2/media/seen/");
+                                        }
+                                        if (FeatureFlags.isGhostLive) {
+                                            shouldDrop |= path.contains("/heartbeat_and_get_viewer_count/");
+                                            FeatureStatusTracker.setHooked("GhostLive");
+                                        }
 
-                                    if (FeatureFlags.showFollowerToast) {
-                                        if (uri.getPath() != null && uri.getPath().startsWith("/api/v1/friendships/show/")) {
-                                            String[] parts = uri.getPath().split("/");
-                                            if (parts.length >= 5) {
+                                        // Distraction Free
+                                        if (FeatureFlags.disableStories) {
+                                            shouldDrop |= path.contains("/feed/reels_tray/")
+                                                    || path.contains("feed/get_latest_reel_media/")
+                                                    || path.contains("direct_v2/pending_inbox/?visual_message")
+                                                    || path.contains("stories/hallpass/")
+                                                    || path.contains("/api/v1/feed/reels_media_stream/");
+                                        }
+                                        if (FeatureFlags.disableFeed) {
+                                            shouldDrop |= path.endsWith("/feed/timeline/");
+                                        }
+                                        if (FeatureFlags.disableReels && !FeatureFlags.disableReelsExceptDM) {
+                                            shouldDrop |= path.endsWith("/qp/batch_fetch/")
+                                                    || path.contains("api/v1/clips")
+                                                    || path.contains("clips")
+                                                    || path.contains("mixed_media")
+                                                    || path.contains("mixed_media/discover/stream/");
+                                        }
+                                        if (FeatureFlags.disableReelsExceptDM) {
+                                            if (path.startsWith("/api/v1/direct_v2/")) {
+                                                return;
+                                            }
+                                            shouldDrop |= (path.startsWith("/api/v1/clips/") && query != null
+                                                    && (query.contains("next_media_ids=")
+                                                    || query.contains("max_id=")))
+                                                    || path.contains("/clips/discover/")
+                                                    || path.contains("/mixed_media/discover/stream/");
+                                        }
+                                        if (FeatureFlags.disableExplore) {
+                                            shouldDrop |= path.contains("/discover/topical_explore")
+                                                    || path.contains("/discover/topical_explore_stream")
+                                                    || (host != null && host.contains("i.instagram.com") && path.contains("/api/v1/fbsearch/top_serp/"));
+                                        }
+                                        if (FeatureFlags.disableComments) {
+                                            shouldDrop |= path.contains("/api/v1/media/") && path.contains("comments/");
+                                        }
+
+                                        // Ads
+                                        if (FeatureFlags.isAdBlockEnabled) {
+                                            shouldDrop |= path.contains("profile_ads/get_profile_ads/")
+                                                    || path.contains("/async_ads/")
+                                                    || path.contains("/feed/injected_reels_media/")
+                                                    || path.equals("/api/v1/ads/graphql/");
+                                        }
+
+                                        // Analytics
+                                        if (FeatureFlags.isAnalyticsBlocked) {
+                                            shouldDrop |= (host != null && host.contains("graph.instagram.com"))
+                                                    || (host != null && host.contains("graph.facebook.com"))
+                                                    || path.contains("/logging_client_events");
+                                        }
+
+                                        // Misc
+                                        if (FeatureFlags.disableRepost) {
+                                            shouldDrop |= path.contains("/media/create_note/");
+                                        }
+
+                                        if (shouldDrop) {
+                                            // XposedBridge.log("the URI was blocked: " + path);
+                                            // Modify the URI to divert the request to a harmless endpoint
+                                            try {
+                                                URI fakeUri = new URI("https", "127.0.0.1", "/404", null);
+                                                XposedHelpers.setObjectField(requestObj, finalUriFieldName, fakeUri);
+                                                // XposedBridge.log("🚫 [InstaEclipse] Changed URI to: " + fakeUri);
+                                            } catch (Exception e) {
+                                                // XposedBridge.log("❌ [InstaEclipse] Failed to modify URI: " + e.getMessage());
+                                            }
+                                        }
+                                        /*
+                                         DEV Purposes
+                                        else {
+                                            XposedBridge.log("Logging: " + host + path);
+                                        }
+                                         */
+
+                                        if (FeatureFlags.showFollowerToast && path.startsWith("/api/v1/friendships/show/")) {
+                                            String[] parts = path.split("/");
+                                            if (parts.length >= 6) {
                                                 // Extracted ID from /api/v1/friendships/show/{id}
                                                 FollowIndicatorTracker.currentlyViewedUserId = parts[5];
                                             }
                                         }
-                                    }
 
+                                    }
+                                } catch (Throwable t) {
+                                    XposedBridge.log("(InstaEclipse | Interceptor): ❌ Hook error: " + t.getMessage());
                                 }
                             }
                         }
