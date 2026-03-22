@@ -8,6 +8,7 @@ import java.util.regex.Pattern;
 public final class MediaDownloadUtils {
     private static final Set<String> SUPPORTED_EXTENSIONS = Set.of(".jpg", ".jpeg", ".png", ".webp", ".mp4");
     private static final Pattern SAFE_FOLDER_CHARS = Pattern.compile("[^a-zA-Z0-9._-]");
+    private static final int MAX_FOLDER_NAME_LENGTH = 64;
 
     private MediaDownloadUtils() {
     }
@@ -49,7 +50,8 @@ public final class MediaDownloadUtils {
         if (rawFolder == null || rawFolder.trim().isEmpty()) return "instagram_user";
         String cleaned = SAFE_FOLDER_CHARS.matcher(rawFolder.trim()).replaceAll("_");
         cleaned = cleaned.replaceAll("_+", "_");
-        if (cleaned.length() > 64) cleaned = cleaned.substring(0, 64);
+        if (cleaned.length() > MAX_FOLDER_NAME_LENGTH) cleaned = cleaned.substring(0, MAX_FOLDER_NAME_LENGTH);
+        cleaned = cleaned.replaceAll("_+$", "");
         if (cleaned.trim().isEmpty()) return "instagram_user";
         return cleaned;
     }

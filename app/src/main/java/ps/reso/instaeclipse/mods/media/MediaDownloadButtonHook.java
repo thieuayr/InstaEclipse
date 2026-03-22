@@ -56,6 +56,7 @@ public class MediaDownloadButtonHook {
     private static final Pattern USERNAME_FROM_PATH = Pattern.compile("/friendships/show/([^/]+)/?");
     private static final List<String> POST_MENU_HINTS = Arrays.asList("report", "unfollow", "hide", "favorites");
     private static final long MULTI_MEDIA_WINDOW_MS = 15000L;
+    private static final int MAX_CAPTURED_MEDIA = 12;
     private static final Set<Integer> observedActivities = Collections.synchronizedSet(new HashSet<>());
     private static final Set<Integer> observedMenuLists = Collections.synchronizedSet(new HashSet<>());
     private static volatile String latestMediaUrl;
@@ -92,7 +93,7 @@ public class MediaDownloadButtonHook {
                     synchronized (latestMediaUrls) {
                         latestMediaUrls.removeIf(media -> requestUrl.equals(media.url));
                         latestMediaUrls.add(new CapturedMedia(requestUrl, System.currentTimeMillis()));
-                        while (latestMediaUrls.size() > 12) {
+                        while (latestMediaUrls.size() > MAX_CAPTURED_MEDIA) {
                             latestMediaUrls.remove(0);
                         }
                     }
@@ -250,8 +251,6 @@ public class MediaDownloadButtonHook {
         }
         if (urls.isEmpty() && singleUrl != null) {
             urls = Collections.singletonList(singleUrl);
-        } else if (urls.size() > 1 && singleUrl != null && !urls.contains(singleUrl)) {
-            urls = Collections.singletonList(singleUrl);
         }
         if (urls.isEmpty()) {
             Toast.makeText(activity, "No downloadable media found yet", Toast.LENGTH_SHORT).show();
@@ -273,13 +272,7 @@ public class MediaDownloadButtonHook {
 
     private static int availableMediaCount() {
         List<String> urls = snapshotMediaUrls();
-        if (!urls.isEmpty()) {
-            String latest = latestMediaUrl;
-            if (latest != null && urls.contains(latest)) {
-                return urls.size();
-            }
-            return 1;
-        }
+        if (!urls.isEmpty()) return urls.size();
         return MediaDownloadUtils.isSupportedMediaUrl(latestMediaUrl) ? 1 : 0;
     }
 
@@ -420,7 +413,7 @@ public class MediaDownloadButtonHook {
                 File baseDir = ext.equals(".mp4")
                         ? Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES)
                         : Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES);
-                File folder = new File(baseDir, "InstaEclipse/" + safeProfileFolder);
+                File folder = new File(new File(baseDir, "InstaEclipse"), safeProfileFolder);
                 if (!folder.exists() && !folder.mkdirs()) {
                     showToast("Download failed");
                     return;
