@@ -5,54 +5,66 @@ import java.util.Locale;
 import java.util.Set;
 
 public final class MediaDownloadUtils {
-    private static final Set<String> SUPPORTED_EXTENSIONS =
-            Set.of(".jpg", ".jpeg", ".png", ".webp", ".mp4");
+
+    private static final Set<String> IMAGE_EXTENSIONS = Set.of(".jpg", ".jpeg", ".png", ".webp");
+    private static final Set<String> VIDEO_EXTENSIONS = Set.of(".mp4", ".mov");
 
     private MediaDownloadUtils() {}
 
-    /**
-     * Returns true for any CDN URL that looks like Instagram media.
-     * Instagram CDN URLs often have no clean file extension in the path —
-     * they use query strings like ?efg=... or path segments like /v/t51.xxx/
-     * So we accept any trusted-host HTTPS URL here and determine type later.
-     */
     public static boolean isSupportedMediaUrl(String url) {
+        return isImageUrl(url) || isVideoUrl(url);
+    }
+
+    /**
+     * Detects Instagram image CDN URLs.
+     * Instagram image URLs look like:
+     *   https://scontent.cdninstagram.com/v/t51.2885-15/...jpg
+     *   https://instagram.fXXX.fna.fbcdn.net/v/t51...
+     */
+    public static boolean isImageUrl(String url) {
         if (url == null || url.isEmpty()) return false;
         try {
             URI uri = URI.create(url);
             if (!"https".equalsIgnoreCase(uri.getScheme())) return false;
             if (!isTrustedInstagramHost(uri.getHost())) return false;
-            // Accept if it has a known extension OR looks like a CDN media path
-            String ext = fileExtensionForPath(uri.getPath());
-            if (SUPPORTED_EXTENSIONS.contains(ext)) return true;
-            // Instagram video/image CDN paths contain these patterns
             String path = uri.getPath().toLowerCase(Locale.ROOT);
-            return path.contains("/v/t") || path.contains("/v/f") // video CDN
-                    || path.contains("/s") && path.contains("x")  // image CDN scaled
-                    || path.contains("/e")                         // encoded media
-                    || (uri.getQuery() != null && uri.getQuery().contains("efg=")); // CDN token
-        } catch (Exception e) {
-            return false;
-        }
+            // Known image CDN path prefix
+            if (path.contains("/t51.") || path.contains("/t50.2885-15")) return true;
+            String ext = extensionOf(path);
+            return IMAGE_EXTENSIONS.contains(ext);
+        } catch (Exception e) { return false; }
     }
 
     /**
-     * Determines file extension. For CDN URLs without a clean extension,
-     * sniff by path patterns: video paths contain /v/t, images contain /s or /e.
+     * Detects Instagram video CDN URLs.
+     * Instagram video URLs look like:
+     *   https://scontent.cdninstagram.com/v/t50.2886-16/...mp4
+     *   or contain /t50. prefix (video CDN)
+     */
+    public static boolean isVideoUrl(String url) {
+        if (url == null || url.isEmpty()) return false;
+        try {
+            String lower = url.toLowerCase(Locale.ROOT);
+            // Direct check first (fast path)
+            if (lower.contains(".mp4")) return true;
+            URI uri = URI.create(url);
+            if (!isTrustedInstagramHost(uri.getHost())) return false;
+            String path = uri.getPath().toLowerCase(Locale.ROOT);
+            // Known video CDN path prefix
+            if (path.contains("/t50.2886") || path.contains("/t50.16")) return true;
+            String ext = extensionOf(path);
+            return VIDEO_EXTENSIONS.contains(ext);
+        } catch (Exception e) { return false; }
+    }
+
+    /**
+     * Returns the file extension to use when saving.
+     * Checks Content-Type sniff patterns first, then URL.
      */
     public static String fileExtensionForUrl(String url) {
-        if (url == null || url.isEmpty()) return ".jpg";
-        try {
-            URI uri = URI.create(url);
-            String ext = fileExtensionForPath(uri.getPath());
-            if (SUPPORTED_EXTENSIONS.contains(ext)) return ext;
-            // Sniff from CDN path
-            String path = uri.getPath().toLowerCase(Locale.ROOT);
-            if (path.contains("/v/t") || path.contains("/v/f")) return ".mp4";
-            return ".jpg"; // default to image
-        } catch (Exception e) {
-            return ".jpg";
-        }
+        if (url == null) return ".jpg";
+        if (isVideoUrl(url)) return ".mp4";
+        return ".jpg";
     }
 
     public static boolean isTrustedInstagramHost(String host) {
@@ -66,25 +78,14 @@ public final class MediaDownloadUtils {
                 || lower.endsWith(".fbcdn.net");
     }
 
-    public static boolean isVideoUrl(String url) {
-        if (url == null) return false;
-        String lower = url.toLowerCase(Locale.ROOT);
-        return lower.contains(".mp4")
-                || lower.contains("/v/t")
-                || lower.contains("/v/f")
-                || lower.contains("video");
-    }
-
-    private static String fileExtensionForPath(String path) {
-        if (path == null || path.isEmpty()) return "";
-        String lowerPath = path.toLowerCase(Locale.ROOT);
-        int lastSlash = lowerPath.lastIndexOf('/');
-        String fileName = lastSlash >= 0 ? lowerPath.substring(lastSlash + 1) : lowerPath;
-        // Strip query params from filename
-        int q = fileName.indexOf('?');
-        if (q >= 0) fileName = fileName.substring(0, q);
-        int dot = fileName.lastIndexOf('.');
-        if (dot < 0 || dot == fileName.length() - 1) return "";
-        return fileName.substring(dot);
+    private static String extensionOf(String path) {
+        // Strip query string
+        int q = path.indexOf('?');
+        if (q >= 0) path = path.substring(0, q);
+        int lastSlash = path.lastIndexOf('/');
+        String file = lastSlash >= 0 ? path.substring(lastSlash + 1) : path;
+        int dot = file.lastIndexOf('.');
+        if (dot < 0 || dot == file.length() - 1) return "";
+        return file.substring(dot);
     }
 }
