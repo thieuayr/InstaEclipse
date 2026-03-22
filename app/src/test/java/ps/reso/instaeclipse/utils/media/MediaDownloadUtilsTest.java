@@ -35,4 +35,11 @@ public class MediaDownloadUtilsTest {
         assertFalse(MediaDownloadUtils.isTrustedInstagramHost("example.com"));
         assertFalse(MediaDownloadUtils.isTrustedInstagramHost("evilinstagram.com"));
     }
+
+    @Test
+    public void safeFolderNameSanitizesUnsafeCharactersAndFallbacks() {
+        assertEquals("user_name_123", MediaDownloadUtils.safeFolderName("user name@123"));
+        assertEquals("instagram_user", MediaDownloadUtils.safeFolderName("   "));
+        assertEquals("instagram_user", MediaDownloadUtils.safeFolderName(null));
+    }
 }

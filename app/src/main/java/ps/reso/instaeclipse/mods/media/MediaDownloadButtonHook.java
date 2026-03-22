@@ -11,13 +11,17 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
 import android.provider.MediaStore;
+import android.text.TextUtils;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewParent;
+import android.widget.AdapterView;
+import android.widget.ArrayAdapter;
 import android.widget.ImageButton;
 import android.widget.LinearLayout;
+import android.widget.ListView;
 import android.widget.Toast;
 
 import java.io.File;
@@ -27,10 +31,15 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URL;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
@@ -38,12 +47,31 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
 import ps.reso.instaeclipse.utils.feature.FeatureFlags;
 import ps.reso.instaeclipse.utils.feature.FeatureStatusTracker;
 import ps.reso.instaeclipse.utils.media.MediaDownloadUtils;
+import ps.reso.instaeclipse.utils.tracker.FollowIndicatorTracker;
 
 public class MediaDownloadButtonHook {
     private static final String BUTTON_TAG = "instaeclipse_download_button";
+    private static final String MENU_SINGLE = "Download media";
+    private static final String MENU_MULTI = "Download all media";
+    private static final Pattern USERNAME_FROM_PATH = Pattern.compile("/friendships/show/([^/]+)/?");
+    private static final List<String> POST_MENU_HINTS = Arrays.asList("report", "unfollow", "hide", "favorites");
+    private static final long MULTI_MEDIA_WINDOW_MS = 15000L;
     private static final Set<Integer> observedActivities = Collections.synchronizedSet(new HashSet<>());
+    private static final Set<Integer> observedMenuLists = Collections.synchronizedSet(new HashSet<>());
     private static volatile String latestMediaUrl;
+    private static final List<CapturedMedia> latestMediaUrls = new ArrayList<>();
+    private static volatile String latestProfileFolderName;
     private static volatile long lastClickTs;
+
+    private static final class CapturedMedia {
+        final String url;
+        final long ts;
+
+        CapturedMedia(String url, long ts) {
+            this.url = url;
+            this.ts = ts;
+        }
+    }
 
     public void install(XC_LoadPackage.LoadPackageParam lpparam) {
         try {
@@ -61,6 +89,14 @@ public class MediaDownloadButtonHook {
                     if (!MediaDownloadUtils.isSupportedMediaUrl(requestUrl)) return;
                     if (!MediaDownloadUtils.isTrustedInstagramHost(uri.getHost())) return;
                     latestMediaUrl = requestUrl;
+                    synchronized (latestMediaUrls) {
+                        latestMediaUrls.removeIf(media -> requestUrl.equals(media.url));
+                        latestMediaUrls.add(new CapturedMedia(requestUrl, System.currentTimeMillis()));
+                        while (latestMediaUrls.size() > 12) {
+                            latestMediaUrls.remove(0);
+                        }
+                    }
+                    cacheProfileFolderFromPath(uri.getPath());
                     FeatureStatusTracker.setHooked("MediaDownload");
                 }
             });
@@ -96,7 +132,10 @@ public class MediaDownloadButtonHook {
         int key = System.identityHashCode(activity);
         if (!observedActivities.add(key)) return;
         View decorView = activity.getWindow().getDecorView();
-        decorView.getViewTreeObserver().addOnGlobalLayoutListener(() -> attachButtonIfNeeded(activity));
+        decorView.getViewTreeObserver().addOnGlobalLayoutListener(() -> {
+            attachButtonIfNeeded(activity);
+            attachPostMenuDownloadOptionIfNeeded(activity);
+        });
     }
 
     private static ViewGroup nearestHorizontalContainer(View view) {
@@ -139,12 +178,169 @@ public class MediaDownloadButtonHook {
                     return;
                 }
                 Toast.makeText(activity, "Downloading media...", Toast.LENGTH_SHORT).show();
-                new Thread(() -> downloadToGallery(activity.getApplicationContext(), url)).start();
+                String folderName = resolveProfileFolderName();
+                new Thread(() -> downloadToGallery(activity.getApplicationContext(), url, folderName)).start();
             });
             group.addView(button);
         } catch (Throwable t) {
             XposedBridge.log("(InstaEclipse | MediaDownload): inject failed " + t.getMessage());
         }
+    }
+
+    private static void attachPostMenuDownloadOptionIfNeeded(Activity activity) {
+        if (activity == null || activity.getWindow() == null) return;
+        View decor = activity.getWindow().getDecorView();
+        if (!(decor instanceof ViewGroup root)) return;
+        ListView listView = findVisibleListView(root);
+        if (listView == null) return;
+        ArrayAdapter<String> adapter = extractStringAdapter(listView);
+        if (adapter == null) return;
+        if (!isLikelyPostOptionsMenu(adapter)) return;
+
+        int mediaCount = availableMediaCount();
+        if (mediaCount <= 0) return;
+        String menuLabel = mediaCount > 1 ? MENU_MULTI : MENU_SINGLE;
+        String alternateMenuLabel = mediaCount > 1 ? MENU_SINGLE : MENU_MULTI;
+        int existingIndex = -1;
+        for (int i = 0; i < adapter.getCount(); i++) {
+            CharSequence item = adapter.getItem(i);
+            if (item != null && menuLabel.equalsIgnoreCase(item.toString().trim())) {
+                existingIndex = i;
+                break;
+            }
+        }
+        if (existingIndex < 0) {
+            for (int i = 0; i < adapter.getCount(); i++) {
+                CharSequence item = adapter.getItem(i);
+                if (item != null && alternateMenuLabel.equalsIgnoreCase(item.toString().trim())) {
+                    existingIndex = i;
+                    adapter.remove(item.toString());
+                    adapter.insert(menuLabel, i);
+                    adapter.notifyDataSetChanged();
+                    break;
+                }
+            }
+        }
+        if (existingIndex < 0) {
+            adapter.add(menuLabel);
+            adapter.notifyDataSetChanged();
+        }
+
+        if (!observedMenuLists.add(System.identityHashCode(listView))) return;
+        AdapterView.OnItemClickListener previous = listView.getOnItemClickListener();
+        listView.setOnItemClickListener((parent, view, position, id) -> {
+            CharSequence clicked = adapter.getItem(position);
+            if (clicked != null) {
+                String clickedText = clicked.toString().trim();
+                if (MENU_SINGLE.equalsIgnoreCase(clickedText) || MENU_MULTI.equalsIgnoreCase(clickedText)) {
+                    startMenuDownload(activity);
+                    return;
+                }
+            }
+            if (previous != null) previous.onItemClick(parent, view, position, id);
+        });
+    }
+
+    private static void startMenuDownload(Activity activity) {
+        if (activity == null) return;
+        List<String> urls = snapshotMediaUrls();
+        String singleUrl = latestMediaUrl;
+        if (!MediaDownloadUtils.isSupportedMediaUrl(singleUrl)) {
+            singleUrl = null;
+        }
+        if (urls.isEmpty() && singleUrl != null) {
+            urls = Collections.singletonList(singleUrl);
+        } else if (urls.size() > 1 && singleUrl != null && !urls.contains(singleUrl)) {
+            urls = Collections.singletonList(singleUrl);
+        }
+        if (urls.isEmpty()) {
+            Toast.makeText(activity, "No downloadable media found yet", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        String folderName = resolveProfileFolderName();
+        if (urls.size() == 1) {
+            Toast.makeText(activity, "Downloading media...", Toast.LENGTH_SHORT).show();
+        } else {
+            Toast.makeText(activity, "Downloading all media...", Toast.LENGTH_SHORT).show();
+        }
+        List<String> finalUrls = urls;
+        new Thread(() -> {
+            for (String url : finalUrls) {
+                downloadToGallery(activity.getApplicationContext(), url, folderName);
+            }
+        }).start();
+    }
+
+    private static int availableMediaCount() {
+        List<String> urls = snapshotMediaUrls();
+        if (!urls.isEmpty()) {
+            String latest = latestMediaUrl;
+            if (latest != null && urls.contains(latest)) {
+                return urls.size();
+            }
+            return 1;
+        }
+        return MediaDownloadUtils.isSupportedMediaUrl(latestMediaUrl) ? 1 : 0;
+    }
+
+    private static List<String> snapshotMediaUrls() {
+        long cutoff = System.currentTimeMillis() - MULTI_MEDIA_WINDOW_MS;
+        synchronized (latestMediaUrls) {
+            List<String> urls = new ArrayList<>();
+            for (int i = latestMediaUrls.size() - 1; i >= 0; i--) {
+                CapturedMedia media = latestMediaUrls.get(i);
+                if (media.ts < cutoff) continue;
+                if (!urls.contains(media.url)) urls.add(media.url);
+            }
+            Collections.reverse(urls);
+            return urls;
+        }
+    }
+
+    private static boolean isLikelyPostOptionsMenu(ArrayAdapter<String> adapter) {
+        int hintMatches = 0;
+        for (int i = 0; i < adapter.getCount(); i++) {
+            CharSequence item = adapter.getItem(i);
+            if (item == null) continue;
+            String lower = item.toString().trim().toLowerCase();
+            for (String hint : POST_MENU_HINTS) {
+                if (lower.contains(hint)) {
+                    hintMatches++;
+                    break;
+                }
+            }
+            if (hintMatches >= 1) return true;
+        }
+        return false;
+    }
+
+    private static ArrayAdapter<String> extractStringAdapter(ListView listView) {
+        try {
+            if (!(listView.getAdapter() instanceof ArrayAdapter<?> rawAdapter)) return null;
+            if (rawAdapter.getCount() == 0) return null;
+            Object first = rawAdapter.getItem(0);
+            if (!(first instanceof CharSequence)) return null;
+            @SuppressWarnings("unchecked")
+            ArrayAdapter<String> adapter = (ArrayAdapter<String>) rawAdapter;
+            return adapter;
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private static ListView findVisibleListView(ViewGroup root) {
+        for (int i = 0; i < root.getChildCount(); i++) {
+            View child = root.getChildAt(i);
+            if (child.getVisibility() != View.VISIBLE) continue;
+            if (child instanceof ListView listView && listView.isShown()) {
+                return listView;
+            }
+            if (child instanceof ViewGroup group) {
+                ListView nested = findVisibleListView(group);
+                if (nested != null) return nested;
+            }
+        }
+        return null;
     }
 
     private static URI findUriField(Object requestObj) {
@@ -161,7 +357,7 @@ public class MediaDownloadButtonHook {
         return null;
     }
 
-    private static void downloadToGallery(Context context, String urlString) {
+    private static void downloadToGallery(Context context, String urlString, String profileFolderName) {
         if (context == null || urlString == null) return;
         HttpURLConnection connection = null;
         InputStream input = null;
@@ -186,14 +382,15 @@ public class MediaDownloadButtonHook {
             String ext = MediaDownloadUtils.fileExtensionForUrl(urlString);
             String fileName = "InstaEclipse_" + System.currentTimeMillis() + "_" + UUID.randomUUID() + ext;
             String mimeType = ext.equals(".mp4") ? "video/mp4" : "image/*";
+            String safeProfileFolder = MediaDownloadUtils.safeFolderName(profileFolderName);
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 ContentValues values = new ContentValues();
                 values.put(MediaStore.MediaColumns.DISPLAY_NAME, fileName);
                 values.put(MediaStore.MediaColumns.MIME_TYPE, mimeType);
                 values.put(MediaStore.MediaColumns.RELATIVE_PATH, ext.equals(".mp4")
-                        ? Environment.DIRECTORY_MOVIES + "/InstaEclipse"
-                        : Environment.DIRECTORY_PICTURES + "/InstaEclipse");
+                        ? Environment.DIRECTORY_MOVIES + "/InstaEclipse/" + safeProfileFolder
+                        : Environment.DIRECTORY_PICTURES + "/InstaEclipse/" + safeProfileFolder);
                 values.put(MediaStore.MediaColumns.IS_PENDING, 1);
 
                 Uri collection = ext.equals(".mp4")
@@ -223,7 +420,7 @@ public class MediaDownloadButtonHook {
                 File baseDir = ext.equals(".mp4")
                         ? Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES)
                         : Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES);
-                File folder = new File(baseDir, "InstaEclipse");
+                File folder = new File(baseDir, "InstaEclipse/" + safeProfileFolder);
                 if (!folder.exists() && !folder.mkdirs()) {
                     showToast("Download failed");
                     return;
@@ -251,6 +448,25 @@ public class MediaDownloadButtonHook {
     private static boolean hasLegacyStoragePermission(Context context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) return true;
         return context.checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private static String resolveProfileFolderName() {
+        String byTracker = FollowIndicatorTracker.currentlyViewedUserId;
+        if (!TextUtils.isEmpty(byTracker)) return MediaDownloadUtils.safeFolderName(byTracker);
+        String byCapture = latestProfileFolderName;
+        if (!TextUtils.isEmpty(byCapture)) return MediaDownloadUtils.safeFolderName(byCapture);
+        return "instagram_user";
+    }
+
+    private static void cacheProfileFolderFromPath(String path) {
+        if (path == null || path.isEmpty()) return;
+        Matcher matcher = USERNAME_FROM_PATH.matcher(path);
+        if (matcher.find()) {
+            String captured = matcher.group(1);
+            if (!TextUtils.isEmpty(captured)) {
+                latestProfileFolderName = captured;
+            }
+        }
     }
 
     private static void copy(InputStream input, OutputStream output) throws Exception {
