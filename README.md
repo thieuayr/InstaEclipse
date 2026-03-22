@@ -13,7 +13,7 @@ This module is built to stay compatible with **new Instagram releases** by lever
 InstaEclipse adds a settings panel inside Instagram (open it by **long-pressing the search icon**) and lets you enable features by category:
 
 - **🎛️ Developer Options**: Access hidden Instagram developer tools and import/export MetaConfig.
-- **👻 Ghost Mode**: Browse more privately (hide seen/typing activity, avoid screenshot alerts, and view once-media improvements).
+- **👻 Ghost Mode**: Browse more privately (hide seen/typing activity, avoid screenshot alerts, and view once media improvements).
 - **🧘 Distraction-Free Mode**: Disable feed, stories, reels, explore, and comments for a cleaner, focused experience.
 - **🚫 Remove Ads & 📉 Remove Analytics**: Block ads and reduce tracking/analytics collection.
 - **🔧 Misc Options**: Quality-of-life tweaks like disabling auto story flipping, disabling autoplay, and follower indicator tools.
