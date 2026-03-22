@@ -22,7 +22,10 @@ import android.os.Looper;
 import android.provider.MediaStore;
 import android.util.TypedValue;
 import android.view.Gravity;
+import android.view.View;
+import android.view.ViewGroup;
 import android.view.WindowManager;
+import android.widget.FrameLayout;
 import android.widget.ImageButton;
 import android.widget.Toast;
 
@@ -48,14 +51,11 @@ import ps.reso.instaeclipse.utils.media.MediaDownloadUtils;
 
 public class MediaDownloadButtonHook {
 
+    private static final String BTN_TAG = "ie_dl_btn";
+
     // Ring-buffer of recently captured media URLs
     private static final ConcurrentLinkedDeque<String> URL_CACHE = new ConcurrentLinkedDeque<>();
     private static final int CACHE_MAX = 30;
-
-    // The floating overlay button
-    private static ImageButton sOverlayButton;
-    private static WindowManager sWindowManager;
-    private static boolean sOverlayAttached = false;
 
     private static volatile long lastClickTs = 0;
 
@@ -66,28 +66,23 @@ public class MediaDownloadButtonHook {
     public void install(XC_LoadPackage.LoadPackageParam lpparam) {
         hookTigonNetwork(lpparam);
         hookExoPlayer(lpparam.classLoader);
-        hookActivityLifecycle(lpparam.classLoader);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // 1. Capture media URLs from TigonServiceLayer (images, feed videos)
+    // 1. Capture media URLs from TigonServiceLayer
     // ─────────────────────────────────────────────────────────────────────────
 
     private void hookTigonNetwork(XC_LoadPackage.LoadPackageParam lpparam) {
         try {
             ClassLoader cl = lpparam.classLoader;
             Class<?> tigonClass = cl.loadClass("com.instagram.api.tigon.TigonServiceLayer");
-            Method[] methods = tigonClass.getDeclaredMethods();
 
             Class<?> param1 = null;
-            Class<?> param2 = null;
-            Class<?> param3 = null;
             String uriField = null;
 
-            for (Method m : methods) {
+            for (Method m : tigonClass.getDeclaredMethods()) {
                 if (m.getName().equals("startRequest") && m.getParameterCount() == 3) {
-                    Class<?>[] p = m.getParameterTypes();
-                    param1 = p[0]; param2 = p[1]; param3 = p[2];
+                    param1 = m.getParameterTypes()[0];
                     break;
                 }
             }
@@ -99,35 +94,33 @@ public class MediaDownloadButtonHook {
             if (param1 == null || uriField == null) return;
 
             final String finalUriField = uriField;
-            XposedHelpers.findAndHookMethod(tigonClass, "startRequest",
-                    param1, param2, param3, new XC_MethodHook() {
-                        @Override
-                        protected void beforeHookedMethod(MethodHookParam param) {
-                            if (!FeatureFlags.enableMediaDownload) return;
-                            try {
-                                Object req = param.args[0];
-                                URI uri = (URI) XposedHelpers.getObjectField(req, finalUriField);
-                                if (uri == null) return;
-                                String url = uri.toString();
-                                if (MediaDownloadUtils.isSupportedMediaUrl(url)
-                                        && MediaDownloadUtils.isTrustedInstagramHost(uri.getHost())) {
-                                    cacheUrl(url);
-                                    FeatureStatusTracker.setHooked("MediaDownload");
-                                }
-                            } catch (Throwable ignored) {}
+            XposedBridge.hookAllMethods(tigonClass, "startRequest", new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    if (!FeatureFlags.enableMediaDownload) return;
+                    try {
+                        Object req = param.args[0];
+                        URI uri = (URI) XposedHelpers.getObjectField(req, finalUriField);
+                        if (uri == null) return;
+                        String url = uri.toString();
+                        if (MediaDownloadUtils.isSupportedMediaUrl(url)
+                                && MediaDownloadUtils.isTrustedInstagramHost(uri.getHost())) {
+                            cacheUrl(url);
+                            FeatureStatusTracker.setHooked("MediaDownload");
                         }
-                    });
+                    } catch (Throwable ignored) {}
+                }
+            });
         } catch (Throwable t) {
             XposedBridge.log("(InstaEclipse | MediaDownload): Tigon hook failed: " + t.getMessage());
         }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // 2. Capture video URLs from ExoPlayer (reels, stories, feed videos)
+    // 2. Capture video URLs from ExoPlayer
     // ─────────────────────────────────────────────────────────────────────────
 
     private void hookExoPlayer(ClassLoader cl) {
-        // ExoPlayer setMediaItem
         try {
             Class<?> exo = cl.loadClass("com.google.android.exoplayer2.ExoPlayer");
             Class<?> mediaItem = cl.loadClass("com.google.android.exoplayer2.MediaItem");
@@ -141,21 +134,6 @@ public class MediaDownloadButtonHook {
             });
         } catch (Throwable ignored) {}
 
-        // ExoPlayer addMediaItem
-        try {
-            Class<?> exo = cl.loadClass("com.google.android.exoplayer2.ExoPlayer");
-            Class<?> mediaItem = cl.loadClass("com.google.android.exoplayer2.MediaItem");
-            XposedHelpers.findAndHookMethod(exo, "addMediaItem", mediaItem, new XC_MethodHook() {
-                @Override
-                protected void beforeHookedMethod(MethodHookParam p) {
-                    if (!FeatureFlags.enableMediaDownload) return;
-                    String url = extractUrlFromMediaItem(p.args[0]);
-                    if (url != null) cacheUrl(url);
-                }
-            });
-        } catch (Throwable ignored) {}
-
-        // MediaPlayer fallback
         try {
             XposedHelpers.findAndHookMethod(android.media.MediaPlayer.class,
                     "setDataSource", String.class, new XC_MethodHook() {
@@ -170,116 +148,70 @@ public class MediaDownloadButtonHook {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // 3. Show/hide overlay button based on Activity lifecycle
+    // Public API — called from UIHookManager.setupHooks() on every onResume
     // ─────────────────────────────────────────────────────────────────────────
 
-    private void hookActivityLifecycle(ClassLoader cl) {
-        // onResume — show button
-        XposedHelpers.findAndHookMethod("android.app.Activity", cl, "onResume", new XC_MethodHook() {
-            @Override
-            protected void afterHookedMethod(MethodHookParam param) {
+    public static void attachButtonIfNeeded(Activity activity) {
+        if (activity == null || !FeatureFlags.enableMediaDownload) return;
+
+        // Use the decor view's root FrameLayout — always present, always on top
+        new Handler(Looper.getMainLooper()).postDelayed(() -> {
+            try {
+                View decor = activity.getWindow().getDecorView();
+                if (!(decor instanceof ViewGroup)) return;
+                ViewGroup root = (ViewGroup) decor;
+
+                // Already injected?
+                if (root.findViewWithTag(BTN_TAG) != null) return;
+
+                ImageButton btn = buildButton(activity);
+
+                FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                        dp(activity, 48), dp(activity, 48));
+                lp.gravity = Gravity.BOTTOM | Gravity.END;
+                lp.bottomMargin = dp(activity, 120);
+                lp.rightMargin = dp(activity, 12);
+                btn.setLayoutParams(lp);
+
+                btn.setOnClickListener(v -> onDownloadClick(activity));
+
+                root.addView(btn);
+                XposedBridge.log("(InstaEclipse | MediaDownload): button injected into decor");
+            } catch (Throwable t) {
+                XposedBridge.log("(InstaEclipse | MediaDownload): attachButton failed: " + t);
+            }
+        }, 600);
+    }
+
+    public static void ensureActivityObserver(Activity activity) {
+        if (activity == null || !FeatureFlags.enableMediaDownload) return;
+        // Re-check on every layout pass in case decor was recreated
+        try {
+            View decor = activity.getWindow().getDecorView();
+            decor.getViewTreeObserver().addOnGlobalLayoutListener(() -> {
                 if (!FeatureFlags.enableMediaDownload) return;
-                Activity activity = (Activity) param.thisObject;
-                String pkg = activity.getClass().getName();
-                if (!pkg.startsWith("com.instagram")) return;
-                new Handler(Looper.getMainLooper()).postDelayed(
-                        () -> showOverlayButton(activity), 500);
-            }
-        });
-
-        // onPause — hide button
-        XposedHelpers.findAndHookMethod("android.app.Activity", cl, "onPause", new XC_MethodHook() {
-            @Override
-            protected void afterHookedMethod(MethodHookParam param) {
-                Activity activity = (Activity) param.thisObject;
-                String pkg = activity.getClass().getName();
-                if (!pkg.startsWith("com.instagram")) return;
-                new Handler(Looper.getMainLooper()).post(
-                        () -> hideOverlayButton(activity));
-            }
-        });
-
-        // onDestroy — cleanup
-        XposedHelpers.findAndHookMethod("android.app.Activity", cl, "onDestroy", new XC_MethodHook() {
-            @Override
-            protected void afterHookedMethod(MethodHookParam param) {
-                new Handler(Looper.getMainLooper()).post(MediaDownloadButtonHook::removeOverlayButton);
-            }
-        });
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Floating overlay button
-    // ─────────────────────────────────────────────────────────────────────────
-
-    @SuppressLint("RtlHardcoded")
-    private static void showOverlayButton(Activity activity) {
-        if (!FeatureFlags.enableMediaDownload) return;
-        try {
-            if (sOverlayAttached) return;
-
-            sWindowManager = (WindowManager) activity.getSystemService(Context.WINDOW_SERVICE);
-            sOverlayButton = new ImageButton(activity);
-            sOverlayButton.setImageDrawable(makeDownloadIcon(activity));
-            sOverlayButton.setBackground(makeCircleBg());
-            int p = dp(activity, 8);
-            sOverlayButton.setPadding(p, p, p, p);
-            sOverlayButton.setContentDescription("Download media");
-            sOverlayButton.setAlpha(0.85f);
-
-            int btnSize = dp(activity, 44);
-            WindowManager.LayoutParams params = new WindowManager.LayoutParams(
-                    btnSize, btnSize,
-                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
-                            ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-                            : WindowManager.LayoutParams.TYPE_PHONE,
-                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                            | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
-                    PixelFormat.TRANSLUCENT
-            );
-            params.gravity = Gravity.BOTTOM | Gravity.RIGHT;
-            params.x = dp(activity, 12);
-            params.y = dp(activity, 120);
-
-            sOverlayButton.setOnClickListener(v -> onDownloadClicked(activity));
-
-            sWindowManager.addView(sOverlayButton, params);
-            sOverlayAttached = true;
-
-        } catch (Throwable t) {
-            XposedBridge.log("(InstaEclipse | MediaDownload): overlay add failed: " + t.getMessage());
-        }
-    }
-
-    private static void hideOverlayButton(Activity activity) {
-        // Just make it invisible when paused, keep it attached
-        if (sOverlayButton != null && sOverlayAttached) {
-            sOverlayButton.setVisibility(android.view.View.INVISIBLE);
-        }
-    }
-
-    private static void removeOverlayButton() {
-        try {
-            if (sWindowManager != null && sOverlayButton != null && sOverlayAttached) {
-                sWindowManager.removeView(sOverlayButton);
-                sOverlayAttached = false;
-                sOverlayButton = null;
-            }
+                if (decor instanceof ViewGroup) {
+                    ViewGroup root = (ViewGroup) decor;
+                    if (root.findViewWithTag(BTN_TAG) == null) {
+                        attachButtonIfNeeded(activity);
+                    }
+                }
+            });
         } catch (Throwable ignored) {}
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Download click handler
+    // Download click
     // ─────────────────────────────────────────────────────────────────────────
 
-    private static void onDownloadClicked(Activity activity) {
+    private static void onDownloadClick(Activity activity) {
         long now = System.currentTimeMillis();
-        if (now - lastClickTs < 1000) return;
+        if (now - lastClickTs < 1500) return;
         lastClickTs = now;
 
         String url = getBestUrl();
         if (url == null) {
-            showToast("No media found yet — scroll or tap the post first");
+            showToast("No media found — scroll or open a post first");
             return;
         }
         showToast("Downloading…");
@@ -288,36 +220,15 @@ public class MediaDownloadButtonHook {
     }
 
     private static String getBestUrl() {
-        // Prefer video URLs (.mp4), then image URLs
-        String best = null;
         for (String url : URL_CACHE) {
             if (url.contains(".mp4") || url.contains("video")) return url;
-            if (best == null) best = url;
         }
-        return best;
+        // Fall back to any cached URL
+        return URL_CACHE.isEmpty() ? null : URL_CACHE.peekFirst();
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Public API — called from UIHookManager (keep backwards compat)
-    // ─────────────────────────────────────────────────────────────────────────
-
-    public static void attachButtonIfNeeded(Activity activity) {
-        if (activity == null || !FeatureFlags.enableMediaDownload) return;
-        new Handler(Looper.getMainLooper()).postDelayed(() -> {
-            if (sOverlayButton != null && sOverlayAttached) {
-                sOverlayButton.setVisibility(android.view.View.VISIBLE);
-            } else {
-                showOverlayButton(activity);
-            }
-        }, 300);
-    }
-
-    public static void ensureActivityObserver(Activity activity) {
-        // No-op: lifecycle hooks handle this now
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Download to gallery
+    // Download logic
     // ─────────────────────────────────────────────────────────────────────────
 
     private static void downloadToGallery(Context context, String urlString) {
@@ -327,8 +238,7 @@ public class MediaDownloadButtonHook {
         try {
             URL url = new URL(urlString);
             if (!MediaDownloadUtils.isTrustedInstagramHost(url.getHost())) {
-                showToast("Blocked: untrusted host");
-                return;
+                showToast("Blocked: untrusted host"); return;
             }
             connection = (HttpURLConnection) url.openConnection();
             connection.setRequestProperty("User-Agent",
@@ -340,10 +250,7 @@ public class MediaDownloadButtonHook {
             connection.connect();
 
             int code = connection.getResponseCode();
-            if (code < 200 || code >= 300) {
-                showToast("Download failed (HTTP " + code + ")");
-                return;
-            }
+            if (code < 200 || code >= 300) { showToast("Download failed (HTTP " + code + ")"); return; }
 
             input = connection.getInputStream();
             String ext = MediaDownloadUtils.fileExtensionForUrl(urlString);
@@ -372,9 +279,8 @@ public class MediaDownloadButtonHook {
                 context.getContentResolver().update(item, done, null, null);
             } else {
                 if (!hasLegacyPermission(context)) { showToast("Storage permission required"); return; }
-                File dir = new File(
-                        Environment.getExternalStoragePublicDirectory(
-                                isVideo ? Environment.DIRECTORY_MOVIES : Environment.DIRECTORY_PICTURES),
+                File dir = new File(Environment.getExternalStoragePublicDirectory(
+                        isVideo ? Environment.DIRECTORY_MOVIES : Environment.DIRECTORY_PICTURES),
                         "InstaEclipse");
                 dir.mkdirs();
                 output = new FileOutputStream(new File(dir, fileName));
@@ -397,7 +303,6 @@ public class MediaDownloadButtonHook {
 
     private static void cacheUrl(String url) {
         if (url == null || url.isEmpty()) return;
-        // Remove duplicates
         URL_CACHE.remove(url);
         URL_CACHE.addFirst(url);
         while (URL_CACHE.size() > CACHE_MAX) URL_CACHE.removeLast();
@@ -458,14 +363,26 @@ public class MediaDownloadButtonHook {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // UI drawing
+    // Button + icon drawing
     // ─────────────────────────────────────────────────────────────────────────
+
+    private static ImageButton buildButton(Context ctx) {
+        ImageButton btn = new ImageButton(ctx);
+        btn.setTag(BTN_TAG);
+        btn.setImageDrawable(makeDownloadIcon(ctx));
+        btn.setBackground(makeCircleBg());
+        int p = dp(ctx, 8);
+        btn.setPadding(p, p, p, p);
+        btn.setElevation(dp(ctx, 8));
+        btn.setContentDescription("Download media");
+        return btn;
+    }
 
     private static GradientDrawable makeCircleBg() {
         GradientDrawable gd = new GradientDrawable();
         gd.setShape(GradientDrawable.OVAL);
-        gd.setColor(0xCC1A1A1A);
-        gd.setStroke(2, 0x55FFFFFF);
+        gd.setColor(0xDD000000);
+        gd.setStroke(3, 0x88FFFFFF);
         return gd;
     }
 
@@ -478,8 +395,8 @@ public class MediaDownloadButtonHook {
         paint.setStrokeWidth(dp(ctx, 2.5f));
         paint.setStrokeCap(Paint.Cap.ROUND);
         paint.setStyle(Paint.Style.STROKE);
-        float cx = size / 2f, top = size * .10f, tip = size * .60f;
-        float ah = size * .22f, ty = size * .78f, th = size * .33f;
+        float cx = size / 2f, top = size * .10f, tip = size * .62f;
+        float ah = size * .22f, ty = size * .80f, th = size * .33f;
         canvas.drawLine(cx, top, cx, tip, paint);
         Path head = new Path();
         head.moveTo(cx - ah, tip - ah);
