@@ -257,11 +257,12 @@ public class Module implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                         XposedBridge.log("(InstaEclipse | Interceptor): ❌ Failed to hook");
                     }
 
-                    // Media download capture & action-row button support
+                    // Media Download — AKinstah-derived approach:
+                    // Hook MediaOptionsOverflowHelper + BottomSheetFragment.onViewCreated
                     try {
-                        new MediaDownloadButtonHook().install(lpparam);
-                    } catch (Throwable ignored) {
-                        XposedBridge.log("(InstaEclipse | MediaDownload): ❌ Failed to hook");
+                        MediaDownloadButtonHook.hookWithDexKit(dexKitBridge, hostClassLoader);
+                    } catch (Throwable e) {
+                        XposedBridge.log("(InstaEclipse | MediaDownload): ❌ Failed: " + e);
                     }
 
                 }
