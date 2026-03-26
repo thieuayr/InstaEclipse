@@ -47,7 +47,7 @@ jobs:
 
       # Step 6: Build the debug APK
       - name: Build Debug APK
-        run: ./gradlew assembleDebug
+        run: ./gradlew assembleRelease
 
       # Step 7: Upload the debug APK as an artifact
       - name: Upload APK
